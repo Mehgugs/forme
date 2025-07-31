@@ -1,9 +1,9 @@
 {
     "type": "package",
     "name": "Mehgugs/forme",
-    "summary": "A different kind of form library.",
+    "summary": "A form library with a codec style API.",
     "license": "BSD-3-Clause",
-    "version": "1.0.0",
+    "version": "0.0.1",
     "exposed-modules": [
         "Forme", 
         "Forme.Decoder"
