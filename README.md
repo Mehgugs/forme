@@ -40,14 +40,11 @@ update msg model =
     case msg of 
         LoginSubmitClicked (Forme.Valid {username, password}) -> 
 
-        LoginSubmitClicked (Forme.Invalid (Err error) _) -> 
-            case error of 
-                Decoder.FailedToConvert what ctx -> 
-                    let 
-                        labelInnerText = Decoder.labelFromContext ctx
-                    in 
-                    (model, Toast.show {message = fmt "There was a problem with the value in '$1'" [labelInnerText]})
-        ...etc...
+        LoginSubmitClicked (Forme.Invalid reports result) -> 
+            ...etc... 
+
+
+       
 
 
 
@@ -77,5 +74,13 @@ If we could get access to this collection in elm, we could write a decoder style
 This has the additional benefit of gracefully handling things like `<select>` (event multiple option selects) and `<input type=radio>`. 
 
 By adding a getter to instances of `HtmlFormElement` we can extract it from the `currentTarget` of a `SubmitEvent` and parse it into an elm value!
+
+Using the javascript interfaces to input elements we can also provide some extra details for certain inputs and even directly parse datetime-local values to a
+`Time.Posix` (sensibly too).
+
+## Validation Messages
+
+
+
 
 

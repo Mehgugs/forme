@@ -44,7 +44,7 @@ If either the constraint validation fails, or your decoder faild then the value 
 -}
 type Form a
     = Valid a
-    | Invalid (Result Decoder.Error a) (List ValidityReport)
+    | Invalid (List ValidityReport) (Result Decoder.Error a)
 
 
 {-| A validity report containing the message from the constraint validation API, as well as some properties describing which form control has the issue.
@@ -104,8 +104,8 @@ submitHelp toMsg result =
         Ok a ->
             ( toMsg <| Valid a, True )
 
-        e ->
-            ( toMsg <| Invalid e [], True )
+        Err e ->
+            ( toMsg <| Invalid [] (Err e), True )
 
 
 {-| Listen for invalid form submissions, providing a decoder and a message handler.
@@ -131,9 +131,24 @@ invalid decoder handler =
         )
 
 
+systeminvalid : Decoder a -> (Form a -> msg) -> Html.Attribute msg
+systeminvalid decoder handler =
+    Events.on "click"
+        (Internal.decodeValidityState
+            |> Json.andThen
+                (\valid ->
+                    if not valid then
+                        Json.map2 (invalidHelp decoder handler) Internal.decodeFormEntries Internal.decodeValidationMessages
+
+                    else
+                        Json.fail "is valid"
+                )
+        )
+
+
 invalidHelp : Decoder a -> (Form a -> msg) -> Internal.FormData -> List ValidityReport -> msg
 invalidHelp decoder toMsg dict messages =
-    toMsg <| Invalid (decode decoder dict) messages
+    toMsg <| Invalid messages (decode decoder dict)
 
 
 {-| Turn off the default browser behaviour when an invalid event is fired within the form.

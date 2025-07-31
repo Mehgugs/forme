@@ -1,5 +1,5 @@
 module Forme.Decoder exposing
-    ( Decoder, Error(..), Ctx
+    ( Decoder, Error(..), Ctx, details
     , field
     , succeed, fail, string, int, float, bool
     , oneOf, list, nonEmpty, exactly, color, date, time
@@ -12,7 +12,7 @@ module Forme.Decoder exposing
 
 # Decoders and Errors
 
-@docs Decoder, Error, Ctx
+@docs Decoder, Error, Ctx, details
 
 
 # Creating a Decoder
@@ -78,6 +78,22 @@ type alias Ctx =
 
 type alias Ctx_ =
     { key : String, dict : Internal.FormData, duplicates : Bool, value : Maybe Internal.RawFormValue }
+
+
+{-| Extract the details from the context value. This can tell you more about what was being decoded when the error was constructed.
+-}
+details : Ctx -> { name : String, value : Maybe ( String, List String ), duplicates : Bool }
+details (InternalCtx_ ctx) =
+    let
+        nemap f ( a, aa ) =
+            ( f a, List.map f aa )
+    in
+    { name = ctx.key
+    , value =
+        Dict.get ctx.key ctx.dict
+            |> Maybe.map (nemap formValueToString)
+    , duplicates = ctx.duplicates
+    }
 
 
 {-| This type represents a decoder that when ran on formdata will produce a value of type `a` or an `Error`.
