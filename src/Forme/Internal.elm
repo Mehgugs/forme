@@ -5,6 +5,7 @@ import Html
 import Html.Attributes as Attr
 import Html.Events as Events
 import Json.Decode as Json
+import Time
 
 
 identifier : String
@@ -13,20 +14,21 @@ identifier =
 
 
 type RawFormValue
-    = Simple String
-    | Complex String (List String)
-
-
-type alias FormEntry =
-    { value : RawFormValue
-    , label : String
-    , message : Maybe String
-    , id : String
-    }
+    = Text String
+    | Number Float String
+    | Instant Time.Posix String
 
 
 type alias FormData =
-    Dict String FormEntry
+    Dict String ( RawFormValue, List RawFormValue )
+
+
+type alias FormEntry =
+    ( RawFormValue, List RawFormValue )
+
+
+type alias ValidityReport =
+    { name : String, message : String }
 
 
 type Ctx
@@ -34,7 +36,7 @@ type Ctx
 
 
 type alias Ctx_ =
-    { key : String, dict : Dict String FormEntry, duplicates : Bool, value : Maybe String }
+    { key : String, dict : FormData, duplicates : Bool, value : Maybe RawFormValue }
 
 
 type Error_
@@ -52,28 +54,47 @@ type Decoder a
 formValueToString : RawFormValue -> String
 formValueToString rfv =
     case rfv of
-        Simple s ->
+        Text s ->
             s
 
-        Complex f _ ->
-            f
+        Number _ s ->
+            s
+
+        Instant _ s ->
+            s
 
 
-additionalValues : RawFormValue -> List String
-additionalValues rfv =
+formValueToInt : RawFormValue -> Maybe Int
+formValueToInt rfv =
     case rfv of
-        Simple s ->
-            []
+        Text s ->
+            String.toInt s
 
-        Complex f fs ->
-            fs
+        Number n s ->
+            String.toInt s
+
+        Instant _ _ ->
+            Nothing
 
 
-unconsOnto : (a -> List a -> b) -> List a -> Maybe b
-unconsOnto f items =
-    case items of
-        first :: rest ->
-            Just (f first rest)
+formValueToFloat : RawFormValue -> Maybe Float
+formValueToFloat rfv =
+    case rfv of
+        Text s ->
+            String.toFloat s
+
+        Number n s ->
+            Just n
+
+        Instant _ _ ->
+            Nothing
+
+
+formValueToTime : RawFormValue -> Maybe Time.Posix
+formValueToTime rfv =
+    case rfv of
+        Instant t _ ->
+            Just t
 
         _ ->
             Nothing
@@ -81,36 +102,61 @@ unconsOnto f items =
 
 decodeFormValue : Json.Decoder RawFormValue
 decodeFormValue =
-    Json.oneOf
-        [ Json.list Json.string
-            |> Json.andThen (unconsOnto Complex >> Maybe.map Json.succeed >> Maybe.withDefault (Json.fail "cannot have an empty complex form value"))
-        , Json.string |> Json.map Simple
-        ]
+    Json.map3
+        (\text fl instant ->
+            case instant of
+                Just posix ->
+                    Instant posix text
+
+                Nothing ->
+                    case fl of
+                        Just number ->
+                            Number number text
+
+                        Nothing ->
+                            Text text
+        )
+        (Json.index 1 Json.string)
+        (Json.index 2 (Json.maybe Json.float))
+        (Json.index 3 (Json.maybe (Json.int |> Json.map Time.millisToPosix)))
 
 
-decodeFormEntry : Json.Decoder FormEntry
+decodeValidationMessage : Json.Decoder ( String, String )
+decodeValidationMessage =
+    Json.map2 Tuple.pair (Json.index 0 Json.string) (Json.index 4 Json.string)
+
+
+decodeFormEntry : Json.Decoder ( String, RawFormValue )
 decodeFormEntry =
-    Json.succeed FormEntry
-        |> Json.map2 (|>) (Json.field "value" decodeFormValue)
-        |> Json.map2 (|>) (Json.field "label" Json.string)
-        |> Json.map2 (|>)
-            (Json.field "message" Json.string
-                |> Json.map
-                    (\s ->
-                        if s == "" then
-                            Nothing
-
-                        else
-                            Just s
-                    )
-            )
-        |> Json.map2 (|>)
-            (Json.field "id" Json.string)
+    Json.map2 Tuple.pair (Json.index 0 Json.string) decodeFormValue
 
 
 decodeFormEntries : Json.Decoder FormData
 decodeFormEntries =
-    Json.at [ "currentTarget", identifier ++ "__entries" ] (Json.dict decodeFormEntry)
+    Json.at [ "currentTarget", identifier ++ "__entries" ]
+        (Json.list decodeFormEntry
+            |> Json.map zipUp
+        )
+
+
+decodeValidationMessages : Json.Decoder (List ValidityReport)
+decodeValidationMessages =
+    Json.at [ "currentTarget", identifier ++ "__messages" ]
+        (Json.list (Json.map2 ValidityReport (Json.index 0 Json.string) (Json.index 1 Json.string)))
+
+
+zipUp items =
+    List.foldr
+        (\( key, item ) acc ->
+            Dict.update
+                key
+                (Maybe.map (Tuple.mapSecond ((::) item) >> Just)
+                    >> Maybe.withDefault (Just ( item, [] ))
+                )
+                acc
+        )
+        Dict.empty
+        items
 
 
 decodeValidityState : Json.Decoder Bool

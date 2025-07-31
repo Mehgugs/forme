@@ -2,7 +2,7 @@ module Forme.Decoder exposing
     ( Decoder, Error(..), Ctx
     , field
     , succeed, fail, string, int, float, bool
-    , oneOf, list, nonEmpty, exactly, color, date
+    , oneOf, list, nonEmpty, exactly, color, date, time
     , map, andThen, map2, andMap, optional, default
     , allowDuplicates
     )
@@ -27,7 +27,7 @@ module Forme.Decoder exposing
 
 # Fancier Decoders
 
-@docs oneOf, list, nonEmpty, exactly, color, date
+@docs oneOf, list, nonEmpty, exactly, color, date, time
 
 
 # Manipulating Decoders
@@ -77,7 +77,7 @@ type alias Ctx =
 
 
 type alias Ctx_ =
-    { key : String, dict : Dict String FormEntry, duplicates : Bool, value : Maybe String }
+    { key : String, dict : Internal.FormData, duplicates : Bool, value : Maybe Internal.RawFormValue }
 
 
 {-| This type represents a decoder that when ran on formdata will produce a value of type `a` or an `Error`.
@@ -92,41 +92,10 @@ error f internal =
 
 
 
--- ERROR READING
-
-
-{-| Get the innerText of the label for the formdata entry that was being parsed, if any.
--}
-labelFromContext : Ctx -> Maybe String
-labelFromContext (InternalCtx_ { key, dict }) =
-    Dict.get key dict |> Maybe.map .label
-
-
-{-| Get the constraint validation message of the element for the formdata entry that was being parsed, if any.
--}
-constraintMessageFromContext : Ctx -> Maybe String
-constraintMessageFromContext (InternalCtx_ { key, dict }) =
-    Dict.get key dict |> Maybe.andThen .message
-
-
-{-| Get the raw formdata values that were being parsed, including all duplicate values.
--}
-rawValueFromContext : Ctx -> Maybe ( String, List String )
-rawValueFromContext (InternalCtx_ { key, dict, value }) =
-    Dict.get key dict
-        |> Maybe.map .value
-        |> Maybe.map (\v -> ( formValueToString v, additionalValues v ))
-
-
-
 -- HELPER
 
 
-duple f a =
-    ( a, f a )
-
-
-getCurrentValue : Ctx_ -> Result Error_ String
+getCurrentValue : Ctx_ -> Result Error_ RawFormValue
 getCurrentValue ({ key, dict, duplicates, value } as ctx) =
     case Dict.get key dict of
         Just entry ->
@@ -141,13 +110,13 @@ getCurrentValue ({ key, dict, duplicates, value } as ctx) =
             error NotFound_ ctx
 
 
-entryToValue : Ctx_ -> FormEntry -> Result Error_ String
-entryToValue ({ duplicates } as ctx) { value } =
+entryToValue : Ctx_ -> FormEntry -> Result Error_ RawFormValue
+entryToValue ({ duplicates } as ctx) value =
     case value of
-        Simple s ->
+        ( s, [] ) ->
             Ok s
 
-        Complex s ss ->
+        ( s, more ) ->
             if duplicates then
                 Ok s
 
@@ -163,15 +132,6 @@ getCurrentEntry ({ key, dict, duplicates, value } as ctx) =
 
         Nothing ->
             error NotFound_ ctx
-
-
-simple : String -> (String -> Maybe a) -> Decoder a
-simple type_ f =
-    Decoder_ <|
-        \ctx ->
-            getCurrentValue ctx
-                |> Result.map f
-                |> Result.andThen (Maybe.map Ok >> Maybe.withDefault (error (FailedToConvert_ type_) ctx))
 
 
 
@@ -234,21 +194,45 @@ fail_ e =
 -}
 string : Decoder String
 string =
-    Decoder_ <| getCurrentValue
+    Decoder_ <| (Result.map formValueToString << getCurrentValue)
 
 
 {-| Decode an integer value.
 -}
 int : Decoder Int
 int =
-    simple "INT" String.toInt
+    Decoder_ <|
+        \ctx ->
+            case getCurrentValue ctx of
+                Ok v ->
+                    case formValueToInt v of
+                        Just i ->
+                            Ok i
+
+                        Nothing ->
+                            error (FailedToConvert_ "INT") ctx
+
+                Err x ->
+                    Err x
 
 
 {-| Decode a float value.
 -}
 float : Decoder Float
 float =
-    simple "FLOAT" String.toFloat
+    Decoder_ <|
+        \ctx ->
+            case getCurrentValue ctx of
+                Ok v ->
+                    case formValueToFloat v of
+                        Just i ->
+                            Ok i
+
+                        Nothing ->
+                            error (FailedToConvert_ "FLOAT") ctx
+
+                Err x ->
+                    Err x
 
 
 {-| Decode a boolean from formdata assuming a check box format.
@@ -262,7 +246,7 @@ bool : Decoder Bool
 bool =
     Decoder_ <|
         \ctx ->
-            case getCurrentValue ctx of
+            case getCurrentValue ctx |> Result.map formValueToString of
                 Ok "on" ->
                     Ok True
 
@@ -291,10 +275,10 @@ list (Decoder_ f) =
     Decoder_ <|
         \ctx ->
             case getCurrentEntry ctx of
-                Ok entry ->
+                Ok ( first, more ) ->
                     let
                         allValues =
-                            formValueToString entry.value :: additionalValues entry.value
+                            first :: more
 
                         folder item acc =
                             Result.map2 (::) (f { ctx | value = Just item }) acc
@@ -369,29 +353,11 @@ nonEmpty =
     Decoder_ <|
         \ctx ->
             case getCurrentValue ctx of
-                Ok "" ->
+                Ok (Text "") ->
                     Ok Nothing
 
-                Ok s ->
-                    Ok (Just s)
-
-                Err x ->
-                    Err x
-
-
-{-| Decodes the underlying formdata directly, and provides the label for the entry.
--}
-metadata : Decoder { value : String, label : String, additional : List String }
-metadata =
-    Decoder_ <|
-        \ctx ->
-            case getCurrentEntry ctx of
-                Ok entry ->
-                    Ok
-                        { value = formValueToString entry.value
-                        , label = entry.label
-                        , additional = additionalValues entry.value
-                        }
+                Ok fv ->
+                    Ok (Just (formValueToString fv))
 
                 Err x ->
                     Err x
@@ -432,27 +398,53 @@ color =
 
 {-| Decode a colour, formatted the same way the value of `<input type="date" />` is formatted.
 
-NB. The inputs corresponding to "datetime-local" and "time" are omitted because there is no standard type for these
-values, and to store a datetime-local in a `Time.Posix` we'd need to provide a `Time.Zone`.
+NB. The inputs corresponding to "datetime-local" and "time" are omitted because there is no standard elm type for these
+values, because a `Time.Posix` corresponds to a fully zoned date-time.
 
 -}
 date : Decoder Date
 date =
     let
         process text =
-            case text |> String.split "-" of
-                [ yyyy, mm, dd ] ->
-                    Maybe.map3 (\year month day -> Date.fromCalendarDate year month day)
-                        (String.toInt yyyy)
-                        (String.toInt mm |> Maybe.map Date.numberToMonth)
-                        (String.toInt dd)
-                        |> Maybe.map succeed
-                        |> Maybe.withDefault (fail_ (FailedToConvert_ "DATE"))
+            if text == "" then
+                fail_ NotFound_
 
-                _ ->
-                    fail_ (FailedToConvert_ "DATE")
+            else
+                case text |> String.split "-" of
+                    [ yyyy, mm, dd ] ->
+                        Maybe.map3 (\year month day -> Date.fromCalendarDate year month day)
+                            (String.toInt yyyy)
+                            (String.toInt mm |> Maybe.map Date.numberToMonth)
+                            (String.toInt dd)
+                            |> Maybe.map succeed
+                            |> Maybe.withDefault (fail_ (FailedToConvert_ "DATE"))
+
+                    _ ->
+                        fail_ (FailedToConvert_ "DATE")
     in
     string |> andThen process
+
+
+{-| Decode a time, by using the input's `valueAsDate` value if it was a valid Date.
+
+In practice this will only decode values from `"datetime-local"` type inputs, since they are the only inputs that define this field by default.
+
+-}
+time : Decoder Time.Posix
+time =
+    Decoder_ <|
+        \ctx ->
+            case getCurrentValue ctx of
+                Ok v ->
+                    case formValueToTime v of
+                        Just i ->
+                            Ok i
+
+                        Nothing ->
+                            error (FailedToConvert_ "TIME") ctx
+
+                Err x ->
+                    Err x
 
 
 

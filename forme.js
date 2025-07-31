@@ -4,52 +4,44 @@
 
     const suppressor = e => e.preventDefault()
 
+    const killNaN = x => {
+        isNaN(x) ? null : x
+    }
+
     if (!Object.hasOwnProperty.call(HTMLFormElement.prototype, `${identifier}__entries`)) {
 
         Object.defineProperties(HTMLFormElement.prototype, {
 
             [`${identifier}__entries`]: {
                 get() {
+                    
+                    return [...new FormData(this)]
+                        .map(([name, value]) => [name, value, killNaN(this.elements[name]?.valueAsNumber), this.elements[name]?.valueAsDate?.getTime?.()])
+                }
+            },
 
-                    const result = {}
+            [`${identifier}__messages`]: {
+                get() {
 
-                    for (const [key, value] of new FormData(this)) {
+                    const result = []
 
-                        let element = this.elements[key]
+                    for (let input of this.elements) {
 
-                        if (element instanceof RadioNodeList) {
+                        if (input instanceof RadioNodeList) {
 
-                            element = Array.from(element)
-                                .find(e => e.name === key && e.value === value && e.checked)
-                        }
+                            const value = input.value 
+                            input = [...input.values()].filter(e => e.value === value && e.checked)
 
-                        if ((["date", "number"].includes(element?.type)) && (value === "")) {
+                            if (!input) {
 
-                            continue
-                        }
-
-                        const message = element?.validationMessage ?? ""
-
-                        if (!result.hasOwnProperty(key)) {
-
-                            const entry = { 
-                                value, 
-                                label: element?.labels?.[0]?.textContent ?? key, 
-                                message, 
-                                id: element.id ?? '',
-                            }
-
-                            result[key] = entry
-                        } else {
-
-                            if (Array.isArray(result[key].value)) {
-
-                                result[key].value.push(value)
-                            } else {
-
-                                result[key].value = [result[key].value, value]
+                                continue
                             }
                         }
+                        if (input.validationMessage !== "") {
+
+                            result.push([input.name ?? input.id, input.validationMessage])
+                        }
+                        
                     }
 
                     return result

@@ -50,7 +50,7 @@ type Form a
 {-| A validity report containing the message from the constraint validation API, as well as some properties describing which form control has the issue.
 -}
 type alias ValidityReport =
-    { id : String, message : String, name : String, label : String }
+    Internal.ValidityReport
 
 
 type alias FormEvents msg =
@@ -123,8 +123,7 @@ invalid decoder handler =
             |> Json.andThen
                 (\valid ->
                     if not valid then
-                        Internal.decodeFormEntries
-                            |> Json.map (invalidHelp decoder handler)
+                        Json.map2 (invalidHelp decoder handler) Internal.decodeFormEntries Internal.decodeValidationMessages
 
                     else
                         Json.fail "is valid"
@@ -132,24 +131,9 @@ invalid decoder handler =
         )
 
 
-invalidHelp : Decoder a -> (Form a -> msg) -> Internal.FormData -> msg
-invalidHelp decoder toMsg dict =
-    let
-        fakeCtx k =
-            Internal.InternalCtx_
-                { key = k, dict = dict, duplicates = False, value = Nothing }
-
-        constraintErrors =
-            Dict.filter (\k v -> v.message /= Nothing) dict
-                |> Dict.foldl (\k v acc -> { id = v.id, message = v.message |> Maybe.withDefault "", name = k, label = v.label } :: acc)
-                    []
-    in
-    case constraintErrors of
-        [] ->
-            toMsg <| Invalid (decode decoder dict) []
-
-        errors ->
-            toMsg <| Invalid (decode decoder dict) errors
+invalidHelp : Decoder a -> (Form a -> msg) -> Internal.FormData -> List ValidityReport -> msg
+invalidHelp decoder toMsg dict messages =
+    toMsg <| Invalid (decode decoder dict) messages
 
 
 {-| Turn off the default browser behaviour when an invalid event is fired within the form.
