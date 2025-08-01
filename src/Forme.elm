@@ -59,7 +59,7 @@ type alias FormEvents msg =
 
 decode : Decoder a -> Internal.FormData -> Result Decoder.Error a
 decode (Internal.Decoder_ f) dict =
-    f { dict = dict, key = "", duplicates = False, value = Nothing } |> Result.mapError toPublicError
+    f { dict = dict, key = "", duplicates = False, value = Nothing, optional = False } |> Result.mapError toPublicError
 
 
 {-| You may want to use the same form decoder and message handler, this little convenience function

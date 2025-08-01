@@ -3,7 +3,10 @@ module Forme.Decoder exposing
     , field
     , succeed, fail, string, int, float, bool
     , oneOf, list, nonEmpty, exactly, color, date, time
-    , map, andThen, map2, andMap, optional, default
+    , map, optional, default, try
+    , andThen
+    , andMap
+    , map2
     , allowDuplicates
     )
 
@@ -32,7 +35,42 @@ module Forme.Decoder exposing
 
 # Manipulating Decoders
 
-@docs map, andThen, map2, andMap, optional, default
+The following functions let us change the behaviour of a decoder.
+
+@docs map, optional, default, try
+
+
+# Combining Multiple Decoders
+
+@docs andThen
+
+@docs andMap
+
+This library works best if you use a pipeline style to construct decoders, instead of
+a `mapN` function for the specific number of fields. The `andMap` function lets us chain together
+multiple decoders in a more erganomic way than [`andThen`](#andThen).
+
+    type alias LoginForm =
+        { username : String
+        , rememberMe : Bool
+        , password : String
+        }
+
+    formDecoder : Decoder LoginForm
+    formDecoder =
+        succeed LoginForm
+        |> andMap (field "username" string)
+        |> andMap (field "remember-me" bool)
+        |> andMap (field "password" nonEmpty)
+
+@docs map2
+
+The `map2` is still provided by this library as a primitive, it's simply a bit more terse when you're decoding things like tuples or
+two argument variants.
+
+    pointDecoder : (Float, Float)
+    pointDecoder =
+        map2 Tuple.pair (field "x" float) (field "y" float)
 
 
 # Controlling the Decoding
@@ -53,12 +91,13 @@ import Time
 
 Most of the variants contain a context which can provide details about what was happening when the error was constructed.
 
-  - `NotFound` is used to signal that the key supplied by `field` did not exist in the form data.
-  - `DuplicateValues` is used to signal that the formdata contained multiple values for the same name,
-    which can be ignored situationally by using `allowDuplicates`.
-  - `FailedToConvert` is used to signal that internally a string conversion failed; for example if you use `int`
-    but the formdata value is not recognized by `String.toInt`.
-  - `NoValidDecoder` is used to signal that a `oneOf` had no decoders to run.
+  - **NotFound** is used to signal that the key supplied by [`field`](#field) did not exist in the form data.
+  - **DuplicateValues** is used to signal that the formdata contained multiple values for the same name,
+    which can be ignored situationally by using [`allowDuplicates`](#allowDuplicates).
+  - **FailedToConvert** is used to signal that internally a string conversion failed; for example if you use [`int`](#int).
+    but the formdata value is not recognized by [`String.toInt`](/packages/elm/core/latest/String#toInt).
+  - **NoValidDecoder** is used to signal that a [`oneOf`](#oneOf) had no decoders to run.
+  - **UserDefined** is used to hold error messages provided to [`fail`](#fail).
 
 -}
 type Error
@@ -70,14 +109,14 @@ type Error
 
 
 {-| This context value is created as the formdata travels through the decoder,
-and can be queried for information about what was being decoded at the time an error occurred.
+and can be queried for information about what was being decoded at the time an error occurred by using the [`details`](#details) helper function.
 -}
 type alias Ctx =
     Internal.Ctx
 
 
 type alias Ctx_ =
-    { key : String, dict : Internal.FormData, duplicates : Bool, value : Maybe Internal.RawFormValue }
+    { key : String, dict : Internal.FormData, duplicates : Bool, value : Maybe Internal.RawFormValue, optional : Bool }
 
 
 {-| Extract the details from the context value. This can tell you more about what was being decoded when the error was constructed.
@@ -96,7 +135,7 @@ details (InternalCtx_ ctx) =
     }
 
 
-{-| This type represents a decoder that when ran on formdata will produce a value of type `a` or an `Error`.
+{-| This type represents a decoder that when ran on formdata will produce a value of type `a` or an [`Error`](#Error).
 -}
 type alias Decoder a =
     Internal.Decoder a
@@ -167,7 +206,7 @@ key-value pairs so we need to use this function to access them, and because form
     --     |          |_ this field is the one that will be used.
     --     |_ this is a no-op.
 
-@see andMap, map2 for an example of using multiple `fields`.
+See [these functions](#fancier-decoders) for an example of using multiple `fields`.
 
 -}
 field : String -> Decoder a -> Decoder a
@@ -309,7 +348,7 @@ list (Decoder_ f) =
 
 If the input decoder list is empty, or they all fail then `NoValidDecoder` is signaled.
 
-This can be used to decode variants with helpers like `exactly`:
+This can be used to decode variants with helpers like [`exactly`](#exactly):
 
     type Direction = North | South | East | West
 
@@ -346,7 +385,7 @@ oneOf decoders =
 
 {-| Given a string, returns a decoder which only succeeds if the formdata value is the exact text provided.
 
-@see oneOf for an example of using `exactly`.
+See [`oneOf`](#oneOf) for an example of using `exactly`.
 
 -}
 exactly : String -> Decoder ()
@@ -364,16 +403,16 @@ exactly text =
 
 {-| Decodes a string but discards the empty string.
 -}
-nonEmpty : Decoder (Maybe String)
+nonEmpty : Decoder String
 nonEmpty =
     Decoder_ <|
         \ctx ->
             case getCurrentValue ctx of
                 Ok (Text "") ->
-                    Ok Nothing
+                    error NotFound_ ctx
 
                 Ok fv ->
-                    Ok (Just (formValueToString fv))
+                    Ok (formValueToString fv)
 
                 Err x ->
                     Err x
@@ -412,15 +451,19 @@ color =
     string |> andThen process
 
 
-{-| Decode a colour, formatted the same way the value of `<input type="date" />` is formatted.
-
-NB. The inputs corresponding to "datetime-local" and "time" are omitted because there is no standard elm type for these
-values, because a `Time.Posix` corresponds to a fully zoned date-time.
-
+{-| Decode a date, formatted the same way the value of `<input type="date" />` is formatted, or in other words, a
+string in the form `yyyy-mm-dd`. This decoder also enforces the length of the year part of the input text.
 -}
 date : Decoder Date
 date =
     let
+        asLongAs n s =
+            if String.length s < n then
+                Nothing
+
+            else
+                Just s
+
         process text =
             if text == "" then
                 fail_ NotFound_
@@ -428,8 +471,8 @@ date =
             else
                 case text |> String.split "-" of
                     [ yyyy, mm, dd ] ->
-                        Maybe.map3 (\year month day -> Date.fromCalendarDate year month day)
-                            (String.toInt yyyy)
+                        Maybe.map3 Date.fromCalendarDate
+                            (yyyy |> asLongAs 4 |> Maybe.andThen String.toInt)
                             (String.toInt mm |> Maybe.map Date.numberToMonth)
                             (String.toInt dd)
                             |> Maybe.map succeed
@@ -495,13 +538,7 @@ andThen f (Decoder_ d) =
             d ctx |> Result.map f |> Result.andThen (\(Decoder_ d2) -> d2 ctx)
 
 
-{-| Combine the results of two decoders together:
-
-    Decoder.map2 (\first extra -> first ++ " " ++ extra |> String.trim)
-    |> (Decoder.field "firstname" Decoder.string)
-    |> (Decoder.field "surname" Decoder.string)
-
--}
+{-| -}
 map2 : (a -> b -> c) -> Decoder a -> Decoder b -> Decoder c
 map2 f (Decoder_ da) (Decoder_ db) =
     Decoder_ <|
@@ -509,21 +546,7 @@ map2 f (Decoder_ da) (Decoder_ db) =
             Result.map2 f (da ctx) (db ctx)
 
 
-{-| Combine many decoders by applying the result of the second decoder to the result of the first.
-
-(This function is secretly `Decoder.map2 (|>)`)
-
-This function may seem a bit bizarre, but it enables a common decoding idiom used in elm:
-
-    type alias Example = {username : String, password : String}
-
-    exampleDecoder : Decoder Example
-    exampleDecoder =
-        Decoder.succeed Example
-        |> andMap (Decoder.field "username" Decoder.string)
-        |> andMap (Decoder.field "password" Decoder.string)
-
--}
+{-| -}
 andMap : Decoder a -> Decoder (a -> b) -> Decoder b
 andMap (Decoder_ da) (Decoder_ df) =
     Decoder_ <|
@@ -532,12 +555,15 @@ andMap (Decoder_ da) (Decoder_ df) =
 
 
 {-| Stop a decoder from failing if a value could not be found.
+
+**Note:** This function will not discard errors like `FailedToConvert` or `UserDefined`, only `NotFound`.
+
 -}
 optional : Decoder a -> Decoder (Maybe a)
 optional (Decoder_ da) =
     Decoder_ <|
         \ctx ->
-            case da ctx of
+            case da { ctx | optional = True } of
                 Err (NotFound_ _) ->
                     Ok Nothing
 
@@ -553,6 +579,15 @@ optional (Decoder_ da) =
 default : a -> Decoder a -> Decoder a
 default value d =
     d |> optional |> map (Maybe.withDefault value)
+
+
+{-| Given a decoder, returns a decoder which never fails.
+-}
+try : Decoder x -> Decoder (Result Error x)
+try (Decoder_ d) =
+    Decoder_ <|
+        \ctx ->
+            d ctx |> Result.mapError toPublicError |> Ok
 
 
 toPrivateError : Error -> Error_
@@ -572,3 +607,22 @@ toPrivateError ie =
 
         NoValidDecoder c ->
             NoValidDecoder_ c
+
+
+toPublicError : Internal.Error_ -> Error
+toPublicError ie =
+    case ie of
+        NotFound_ c ->
+            NotFound c
+
+        DuplicateValues_ c ->
+            DuplicateValues c
+
+        FailedToConvert_ what c ->
+            FailedToConvert what c
+
+        UserDefined_ msg c ->
+            UserDefined msg c
+
+        NoValidDecoder_ c ->
+            NoValidDecoder c

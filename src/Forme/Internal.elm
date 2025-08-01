@@ -36,7 +36,7 @@ type Ctx
 
 
 type alias Ctx_ =
-    { key : String, dict : FormData, duplicates : Bool, value : Maybe RawFormValue }
+    { key : String, dict : FormData, duplicates : Bool, value : Maybe RawFormValue, optional : Bool }
 
 
 type Error_
